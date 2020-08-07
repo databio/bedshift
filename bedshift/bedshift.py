@@ -152,8 +152,8 @@ class Bedshift(object):
 
     def __check_rate(self, rates):
         for rate in rates:
-            if rate < 0 or rate > 1:
-                _LOGGER.error("Rate must be between 0 and 1")
+            if rate < 0:
+                _LOGGER.error("Rate must be greater than or equal to 0")
                 sys.exit(1)
 
 
