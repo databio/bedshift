@@ -152,8 +152,8 @@ class Bedshift(object):
 
     def __check_rate(self, rates):
         for rate in rates:
-            if rate < 0:
-                _LOGGER.error("Rate must be greater than or equal to 0")
+            if rate < 0 or rate > 1:
+                _LOGGER.error("Rate must be between 0 and 1")
                 sys.exit(1)
 
 
@@ -177,7 +177,9 @@ class Bedshift(object):
         :param float addstdev: the standard deviation of the length of added regions
         :return int: the number of regions added
         """
-        self.__check_rate([addrate])
+        if addrate < 0:
+            _LOGGER.error("Rate must be greater than or equal to 0")
+            sys.exit(1)
         if addrate == 0:
             return 0
         if len(chrom_lens) == 0:
@@ -206,8 +208,9 @@ class Bedshift(object):
         :param str fp: the filepath to the other bedfile
         :return int: the number of regions added
         """
-
-        self.__check_rate([addrate])
+        if addrate < 0:
+            _LOGGER.error("Rate must be greater than or equal to 0")
+            sys.exit(1)
         if addrate == 0:
             return 0
         if len(chrom_lens) == 0:
@@ -217,6 +220,8 @@ class Bedshift(object):
         rows = self.bed.shape[0]
         num_add = int(rows * addrate)
         df = self.read_bed(fp, delimiter=delimiter)
+        if num_add > df.shape[0]:
+            num_add = df.shape[0]
         add_rows = random.sample(list(range(df.shape[0])), num_add)
         add_df = df.loc[add_rows].reset_index(drop=True)
         add_df[3] = pd.Series([3] * add_df.shape[0])
