@@ -8,6 +8,8 @@ import sys
 import pandas as pd
 import numpy as np
 import random
+import yaml
+from tqdm import tqdm
 from bedshift._version import __version__
 
 _LOGGER = logging.getLogger(__name__)
@@ -72,6 +74,9 @@ def build_argparser():
     parser.add_argument(
         "-d", "--droprate", type=float, default=0.0,
         help="Droprate parameter")
+    
+    parser.add_argument(
+        "--dropfile", type=str, help="Drop regions from a bedfile")
 
     parser.add_argument(
         "-a", "--addrate", type=float, default=0.0,
@@ -116,6 +121,9 @@ def build_argparser():
         "-r", "--repeat", type=int, default=1,
         help="the number of times to repeat the operation")
 
+    parser.add_argument(
+        "-y", "--yaml", type=str, help="configuration file for multiple add_from_file, drop_from_file, and shift")
+
     return parser
 
 
@@ -140,13 +148,12 @@ class Bedshift(object):
         self.bed = df.astype({1: 'int64', 2: 'int64', 3: 'int64'}) \
                             .sort_values([0, 1, 2]).reset_index(drop=True)
         self.original_bed = self.bed.copy(deep=True)
-
+        
 
     def reset_bed(self):
         """
         Reset the stored bedfile to the state before perturbations
         """
-
         self.bed = self.original_bed.copy(deep=True)
 
 
@@ -200,7 +207,7 @@ class Bedshift(object):
         self.bed = self.bed.append(pd.DataFrame(new_regions), ignore_index=True)
         return num_add
 
-    def add_from_file(self, fp, addrate, delimiter='\t'):
+    def add_from_file(self, fp, addrate, delimiter='\t', yaml=False):
         """
         Add regions from another bedfile to this perturbed bedfile
 
@@ -213,7 +220,7 @@ class Bedshift(object):
             sys.exit(1)
         if addrate == 0:
             return 0
-        if len(chrom_lens) == 0:
+        if len(chrom_lens) == 0 and yaml == False:
             _LOGGER.error("chrom.sizes file must be specified when adding regions")
             sys.exit(1)
 
@@ -364,6 +371,51 @@ class Bedshift(object):
         self.bed = self.bed.reset_index(drop=True)
         return len(drop_rows)
 
+    def drop_from_file(self, fp, droprate, delimiter='\t'):
+        """
+        drop regions from another bedfile to this perturbed bedfile
+
+        :param float droprate: the rate to drop regions
+        :param str fp: the filepath to the other bedfile
+        :return int: the number of regions dropped
+        """
+        if droprate < 0:
+            _LOGGER.error("Rate must be greater than or equal to 0")
+            sys.exit(1)
+
+        if droprate == 0:
+            return 0
+
+        self.__check_rate(droprate)
+        total = 0
+        rows = self.bed.shape[0]
+        num_drop = int(rows * droprate)
+        
+        self.bed[self.bed.columns[1]] = self.bed[self.bed.columns[1]].apply(int)
+        self.bed[self.bed.columns[2]] = self.bed[self.bed.columns[2]].apply(int)
+
+        with open(fp, 'r') as f:
+
+            lines = 0
+            for region in f:
+                lines += 1
+            f.seek(0)
+            droprate_newfile = num_drop / lines
+
+            for region in tqdm(f):
+                if random.random() < droprate_newfile:
+                    region = region.split('\t')
+                    if str(region[1]).isdigit() and str(region[2]).isdigit():
+                        region_chrom = region[0]
+                        region_start = int(region[1])
+                        region_end = int(region[2])
+
+                        self.bed = self.bed.loc[~((self.bed[self.bed.columns[0]] == region_chrom) &
+                                                  (self.bed[self.bed.columns[1]] == region_start) &
+                                                  (self.bed[self.bed.columns[2]] == region_end)),:]
+                        total += 1
+
+        return total
 
     def all_perturbations(self,
                           addrate=0.0, addmean=320.0, addstdev=30.0,
@@ -371,19 +423,22 @@ class Bedshift(object):
                           shiftrate=0.0, shiftmean=0.0, shiftstdev=150.0,
                           cutrate=0.0,
                           mergerate=0.0,
-                          droprate=0.0):
+                          droprate=0.0,
+                          dropfile=None):
         '''
         Perform all five perturbations in the order of shift, add, cut, merge, drop.
 
         :param float addrate: the rate (as a proportion of the total number of regions) to add regions
         :param float addmean: the mean length of added regions
         :param float addstdev: the standard deviation of the length of added regions
+        :param float addfile: the file with regions to be added
         :param float shiftrate: the rate to shift regions (both the start and end are shifted by the same amount)
         :param float shiftmean: the mean shift distance
         :param float shiftstdev: the standard deviation of the shift distance
         :param float cutrate: the rate to cut regions into two separate regions
         :param float mergerate: the rate to merge two regions into one
         :param float droprate: the rate to drop/remove regions
+        :param float dropfile: the file with regions to be dropped
         :return int: the number of total regions perturbed
         '''
 
@@ -395,7 +450,10 @@ class Bedshift(object):
             n += self.add(addrate, addmean, addstdev)
         n += self.cut(cutrate)
         n += self.merge(mergerate)
-        n += self.drop(droprate)
+        if dropfile:
+            n += self.drop_from_file(dropfile, droprate)
+        else:
+            n +=self.drop(droprate)
         return n
 
 
@@ -434,7 +492,58 @@ class Bedshift(object):
         df[3] = 0 # column indicating which modifications were made
         return df
 
+def _read_from_yaml(fp):
+    """
+    Loads yaml config data
 
+    :param float fp: the path to the configuration file for multiple add_from_file and drop_from_file
+    :return int: loaded yaml data
+    """
+    with open(fp, "r") as yaml_file:
+        config_data = yaml.load(yaml_file, Loader=yaml.FullLoader)
+    return config_data
+
+def handle_yaml(fp):
+    bedshifter = Bedshift(fp)
+    data = _read_from_yaml(fp)
+    operations = [operation for operation in data["bedshift_operations"]]
+
+    for operation in operations:
+        if ['add_from_file', 'file', 'rate', 'delimiter'] == list(operation.keys()):
+            fp = operation['file']
+            if os.path.isfile(fp):
+                add_rate = operation['rate']
+                delimiter = operation['delimiter']
+                if delimiter == None:
+                    num_added = bedshifter.add_from_file(fp, add_rate, yaml=True)
+                else:
+                    num_added = bedshifter.add_from_file(fp, add_rate, delimiter, yaml=True)
+                print("{} regions added".format(num_added))
+            else:
+                print ("File {} does not exist.".format(fp))
+                sys.exit(1)
+
+        elif ['drop_from_file', 'file', 'rate', 'delimiter'] == list(operation.keys()):
+            fp = operation['file']
+            if os.path.isfile(fp):
+                drop_rate = operation['rate']
+                delimiter = operation['delimiter']
+                if delimiter == None:
+                    num_dropped = bedshifter.drop_from_file(fp, drop_rate)
+                else:
+                    num_dropped = bedshifter.drop_from_file(fp, drop_rate, delimiter)
+                print("{} regions dropped".format(num_dropped))
+            else:
+                print ("File {} does not exist.".format(fp))
+                sys.exit(1)
+
+        elif ['shift', 'mean', 'stdev'] == list(operation.keys()):
+            # do shift
+            pass
+        else:
+            print("Invalid input entered in the config file. Please fix and try again!")
+            sys.exit(1)
+        
 
 def main():
     """ Primary workflow """
@@ -446,8 +555,12 @@ def main():
 
     _LOGGER.info("Welcome to bedshift version {}".format(__version__))
     _LOGGER.info("Shifting file: '{}'".format(args.bedfile))
+    
+    if args.yaml:
+        handle_yaml(args.yaml)
+        sys.exit(0)
 
-    if not args.bedfile:
+    elif not args.bedfile:
         parser.print_help()
         _LOGGER.error("No BED file given")
         sys.exit(1)
@@ -482,9 +595,11 @@ def main():
     add file: {addfile}
   cut rate: {cutrate}
   drop rate: {droprate}
+  drop regions from file: {dropfile}
   merge rate: {mergerate}
   outputfile: {outputfile}
   repeat: {repeat}
+  yaml: {yaml}
 """
 
     if args.outputfile:
@@ -495,6 +610,7 @@ def main():
     _LOGGER.info(msg.format(
         chromsizes=args.chrom_lengths,
         droprate=args.droprate,
+        dropfile=args.dropfile,
         addrate=args.addrate,
         addmean=args.addmean,
         addstdev=args.addstdev,
@@ -505,7 +621,8 @@ def main():
         cutrate=args.cutrate,
         mergerate=args.mergerate,
         outputfile=args.outputfile,
-        repeat=args.repeat))
+        repeat=args.repeat,
+        yaml=args.yaml))
 
 
     bedshifter = Bedshift(args.bedfile, args.chrom_lengths)
@@ -515,7 +632,8 @@ def main():
                                           args.shiftrate, args.shiftmean, args.shiftstdev,
                                           args.cutrate,
                                           args.mergerate,
-                                          args.droprate)
+                                          args.droprate,
+                                          args.dropfile)
         bedshifter.to_bed(outfile)
         print(str(n) + " regions changed")
     elif args.repeat > 1:
@@ -526,7 +644,8 @@ def main():
                                                      args.shiftrate, args.shiftmean, args.shiftstdev,
                                                      args.cutrate,
                                                      args.mergerate,
-                                                     args.droprate)
+                                                     args.droprate,
+                                                     args.dropfile)
             modified_outfile = outfile.rsplit("/")
             modified_outfile[-1] = "rep" + str(i+1) + "_" + modified_outfile[-1]
             modified_outfile = "/".join(modified_outfile)
