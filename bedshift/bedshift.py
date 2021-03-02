@@ -8,6 +8,8 @@ import sys
 import pandas as pd
 import numpy as np
 import random
+import yaml
+import pybedtools
 from bedshift._version import __version__
 
 _LOGGER = logging.getLogger(__name__)
@@ -109,12 +111,19 @@ def build_argparser():
         help="Merge probability. WARNING: will likely create regions that are thousands of base pairs long")
 
     parser.add_argument(
+        "--dropfile", type=str, help="Drop regions from a bedfile")
+
+    parser.add_argument(
         "-o", "--outputfile", type=str,
         help="output file name (including extension). if not specified, will default to bedshifted_{originalname}.bed")
 
     parser.add_argument(
         "-r", "--repeat", type=int, default=1,
         help="the number of times to repeat the operation")
+    
+    parser.add_argument(
+        "-y", "--yaml_config", type=str,
+        help="run yaml configuration file")
 
     return parser
 
@@ -132,7 +141,7 @@ class Bedshift(object):
         :param str chrom_sizes: the path to the chrom.sizes file
         :param str delimiter: the delimiter used in the BED file
         """
-
+        self.bedfile_path = bedfile_path
         if chrom_sizes:
             read_chromsizes(chrom_sizes)
         df = self.read_bed(bedfile_path, delimiter=delimiter)
@@ -681,7 +690,6 @@ def main():
 
     elif args.repeat > 1:
         for i in range(args.repeat):
-
             n = bedshifter.all_perturbations(args.bedfile,
                                              args.addrate, args.addmean, args.addstdev,
                                              args.addfile,
