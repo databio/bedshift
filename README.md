@@ -1,3 +1,12 @@
+ARCHIVED REPOSITORY.
+
+As of 2026, bedshift has been integrated into the geniml project. all functionality is now availalbe in that package. 
+
+you can now find more information at 
+
+https://github.com/databio/geniml
+
+
 # Bedshift
 
 Docs: bedshift.databio.org
@@ -45,6 +54,7 @@ python -m unittest
 Double check the output files to see if the regions make sense.
 
 build docs:
+
 
 
 
